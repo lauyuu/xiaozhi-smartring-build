@@ -1455,7 +1455,9 @@ void LcdDisplay::WeatherLoop() {
     // Give the network stack and SNTP a moment after boot.
     vTaskDelay(pdMS_TO_TICKS(15000));
     while (true) {
-        char text[64] = "";
+        // Same size as the weather buffer below so the copy can never truncate
+        // (this project builds with -Werror=format-truncation).
+        char text[96] = "";
         char body[256];
         if (HttpGetText("http://ip-api.com/json/?fields=status,lat,lon", body, sizeof(body), 8000)) {
             const char* lat_ptr = strstr(body, "\"lat\":");
@@ -1463,7 +1465,8 @@ void LcdDisplay::WeatherLoop() {
             if (lat_ptr != nullptr && lon_ptr != nullptr) {
                 double lat = atof(lat_ptr + 6);
                 double lon = atof(lon_ptr + 6);
-                char url[192];
+                // Generous buffer: gcc may assume a worst-case %f expansion.
+                char url[320];
                 snprintf(url, sizeof(url), "http://wttr.in/%.4f,%.4f?format=%%t+%%C", lat, lon);
                 char weather[96];
                 if (HttpGetText(url, weather, sizeof(weather), 12000)) {
@@ -1502,5 +1505,6 @@ void LcdDisplay::StartClockAndWeather() {
     started = true;
     s_clock_owner = this;
     lv_timer_create(&LcdDisplay::ClockTimerCb, 1000, nullptr);
-    xTaskCreate(&LcdDisplay::WeatherTaskEntry, "wx_widget", 6144, this, 2, nullptr);
+    // 8 KB: the HTTP client plus the local buffers need more than the default.
+    xTaskCreate(&LcdDisplay::WeatherTaskEntry, "wx_widget", 8192, this, 2, nullptr);
 }
