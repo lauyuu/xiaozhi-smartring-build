@@ -73,6 +73,25 @@ jobs:
           python scripts/release.py viewe-smartring-plus
           test -s build/merged-binary.bin
 
+      - name: Verify widget code reached the binary
+        shell: bash
+        run: |
+          cd src/examples/esp-idf/11_xiaozhi/xiaozhi-esp32-main_smartring_plus_B_V2
+          echo "SOURCE_MD5=$(md5sum main/display/lcd_display.cc | cut -d' ' -f1)"
+          echo "SOURCE_WX=$(grep -c wx_widget main/display/lcd_display.cc || true)"
+          OBJ=$(find build -name 'lcd_display.cc.obj' | head -1)
+          echo "OBJ_PATH=$OBJ"
+          if [ -n "$OBJ" ]; then
+            echo "OBJ_MD5=$(md5sum "$OBJ" | cut -d' ' -f1)"
+            echo "OBJ_WX=$(strings "$OBJ" | grep -c wx_widget || true)"
+            echo "OBJ_WEATHER=$(strings "$OBJ" | grep -c 'ip-api' || true)"
+          fi
+          echo "BIN_WX=$(grep -ac wx_widget build/merged-binary.bin || true)"
+          echo "BIN_WEATHER=$(grep -ac 'ip-api' build/merged-binary.bin || true)"
+          echo "BIN_SIZE=$(stat -c%s build/merged-binary.bin)"
+          echo "APP_BIN_WX=$(grep -ac wx_widget build/xiaozhi.bin 2>/dev/null || echo 'no app bin')"
+          ls -la releases 2>/dev/null || echo "no releases dir"
+
       - name: Upload merged binary
         uses: actions/upload-artifact@v4
         with:
