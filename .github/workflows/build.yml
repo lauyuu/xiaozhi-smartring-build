@@ -64,6 +64,30 @@ jobs:
               print("injected esp_http_client into PRIV_REQUIRES")
           PY
           grep -n -A 2 "PRIV_REQUIRES" main/CMakeLists.txt | head -5
+          # The app is 0x3f0d20 bytes and the stock ota_0 slot is 0x3f0000 — it no
+          # longer fits. assets only needs ~2.7 MB of its 8 MB, so shrink it to 7 MB
+          # and give both OTA slots 0x470000 each. Nothing hard-codes the address;
+          # assets are located by partition label at runtime. Idempotent.
+          python3 - <<'PY'
+          p = "partitions/v2/16m.csv"
+          src = open(p, encoding="utf-8").read()
+          if "0x470000" in src:
+              print("partition table already patched")
+          else:
+              out = []
+              for line in src.splitlines():
+                  if line.startswith("ota_0,"):
+                      out.append("ota_0,    app,  ota_0,   0x20000,   0x470000,")
+                  elif line.startswith("ota_1,"):
+                      out.append("ota_1,    app,  ota_1,   ,          0x470000,")
+                  elif line.startswith("assets,"):
+                      out.append("assets,   data, spiffs,  0x900000,  7M")
+                  else:
+                      out.append(line)
+              open(p, "w", encoding="utf-8").write("\n".join(out) + "\n")
+              print("patched partition table: ota 0x470000 x2, assets 7M @ 0x900000")
+          PY
+          cat partitions/v2/16m.csv
 
       - name: Build firmware
         shell: bash
