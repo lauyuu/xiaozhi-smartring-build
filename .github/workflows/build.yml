@@ -1,6 +1,3 @@
-# 自包含云端编译工作流：把这个文件单独放进一个空仓库即可，
-# 运行时自动拉取厂商源码，无需 Fork 整个 SmartRing-Plus 仓库。
-# 用法：新建空仓库 -> 新建 .github/workflows/build.yml 粘贴本文件 -> 提交即自动编译。
 name: Build XiaoZhi 2.2.3 for VIEWE SmartRing Plus (1.85 IPS / 16MB)
 
 on:
@@ -36,6 +33,16 @@ jobs:
             examples/esp-idf/11_xiaozhi/xiaozhi-esp32-main_smartring_plus_B_V2
           test -f examples/esp-idf/11_xiaozhi/xiaozhi-esp32-main_smartring_plus_B_V2/scripts/release.py
 
+      - name: Apply local overlay (clock + weather widget)
+        shell: bash
+        run: |
+          set -e
+          TARGET=src/examples/esp-idf/11_xiaozhi/xiaozhi-esp32-main_smartring_plus_B_V2
+          test -d overlay
+          find overlay -type f | sort
+          cp -av overlay/main/display/. "$TARGET/main/display/"
+          grep -c "StartClockAndWeather" "$TARGET/main/display/lcd_display.cc"
+
       - name: Build firmware
         shell: bash
         working-directory: src/examples/esp-idf/11_xiaozhi/xiaozhi-esp32-main_smartring_plus_B_V2
@@ -47,7 +54,7 @@ jobs:
       - name: Upload merged binary
         uses: actions/upload-artifact@v4
         with:
-          name: xiaozhi-viewe-smartring-plus-2.2.3
+          name: xiaozhi-viewe-smartring-plus-clock-weather
           path: |
             src/examples/esp-idf/11_xiaozhi/xiaozhi-esp32-main_smartring_plus_B_V2/build/merged-binary.bin
             src/examples/esp-idf/11_xiaozhi/xiaozhi-esp32-main_smartring_plus_B_V2/releases/*.zip
