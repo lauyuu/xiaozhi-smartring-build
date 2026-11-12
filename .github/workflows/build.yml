@@ -1,0 +1,55 @@
+# 自包含云端编译工作流：把这个文件单独放进一个空仓库即可，
+# 运行时自动拉取厂商源码，无需 Fork 整个 SmartRing-Plus 仓库。
+# 用法：新建空仓库 -> 新建 .github/workflows/build.yml 粘贴本文件 -> 提交即自动编译。
+name: Build XiaoZhi 2.2.3 for VIEWE SmartRing Plus (1.85 IPS / 16MB)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build viewe-smartring-plus
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:v5.5.2
+    steps:
+      - name: Ensure git is available
+        shell: bash
+        run: |
+          if ! command -v git >/dev/null 2>&1; then
+            apt-get update && apt-get install -y --no-install-recommends git ca-certificates
+          fi
+          git --version
+
+      - name: Fetch vendor Xiaozhi source (sparse, only this board's project)
+        shell: bash
+        run: |
+          git clone --depth 1 --filter=blob:none --sparse \
+            https://github.com/VIEWESMART/SmartRing-Plus.git src
+          cd src
+          git sparse-checkout set \
+            examples/esp-idf/11_xiaozhi/xiaozhi-esp32-main_smartring_plus_B_V2
+          test -f examples/esp-idf/11_xiaozhi/xiaozhi-esp32-main_smartring_plus_B_V2/scripts/release.py
+
+      - name: Build firmware
+        shell: bash
+        working-directory: src/examples/esp-idf/11_xiaozhi/xiaozhi-esp32-main_smartring_plus_B_V2
+        run: |
+          source "$IDF_PATH/export.sh"
+          python scripts/release.py viewe-smartring-plus
+          test -s build/merged-binary.bin
+
+      - name: Upload merged binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: xiaozhi-viewe-smartring-plus-2.2.3
+          path: |
+            src/examples/esp-idf/11_xiaozhi/xiaozhi-esp32-main_smartring_plus_B_V2/build/merged-binary.bin
+            src/examples/esp-idf/11_xiaozhi/xiaozhi-esp32-main_smartring_plus_B_V2/releases/*.zip
+          if-no-files-found: error
+          retention-days: 14
