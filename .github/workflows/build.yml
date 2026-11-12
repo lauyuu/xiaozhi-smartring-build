@@ -38,9 +38,12 @@ jobs:
         run: |
           set -e
           TARGET=src/examples/esp-idf/11_xiaozhi/xiaozhi-esp32-main_smartring_plus_B_V2
-          test -d overlay
-          find overlay -type f | sort
-          cp -av overlay/main/display/. "$TARGET/main/display/"
+          # Container jobs do not auto-checkout the repository, so fetch the
+          # overlay from the (public) build repo explicitly. No token needed.
+          git clone --depth 1 https://github.com/${{ github.repository }}.git build-meta
+          test -d build-meta/overlay
+          find build-meta/overlay -type f | sort
+          cp -av build-meta/overlay/main/display/. "$TARGET/main/display/"
           grep -c "StartClockAndWeather" "$TARGET/main/display/lcd_display.cc"
 
       - name: Build firmware
