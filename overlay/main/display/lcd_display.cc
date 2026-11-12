@@ -1425,8 +1425,14 @@ static void TrimInPlace(char* s) {
     }
 }
 
+// LVGL 9 only forward-declares lv_timer_t, so the timer callback cannot reach
+// ->user_data. Keep the owning display in a file-scope pointer instead; there is
+// exactly one display instance per device.
+static LcdDisplay* s_clock_owner = nullptr;
+
 void LcdDisplay::ClockTimerCb(lv_timer_t* t) {
-    auto* self = static_cast<LcdDisplay*>(t->user_data);
+    (void)t;
+    LcdDisplay* self = s_clock_owner;
     if (self == nullptr || self->clock_label_ == nullptr || !lv_obj_is_valid(self->clock_label_)) {
         return;
     }
@@ -1494,6 +1500,7 @@ void LcdDisplay::StartClockAndWeather() {
         return;
     }
     started = true;
-    lv_timer_create(&LcdDisplay::ClockTimerCb, 1000, this);
+    s_clock_owner = this;
+    lv_timer_create(&LcdDisplay::ClockTimerCb, 1000, nullptr);
     xTaskCreate(&LcdDisplay::WeatherTaskEntry, "wx_widget", 6144, this, 2, nullptr);
 }
