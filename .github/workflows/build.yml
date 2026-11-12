@@ -45,6 +45,25 @@ jobs:
           find build-meta/overlay -type f | sort
           cp -av build-meta/overlay/main/display/. "$TARGET/main/display/"
           grep -c "StartClockAndWeather" "$TARGET/main/display/lcd_display.cc"
+          # main/CMakeLists.txt does not list esp_http_client (nothing upstream used
+          # it), so register the dependency for the weather fetcher. Idempotent.
+          cd "$TARGET"
+          python3 - <<'PY'
+          import re
+          p = "main/CMakeLists.txt"
+          src = open(p, encoding="utf-8").read()
+          if "esp_http_client" in src:
+              print("esp_http_client already present")
+          else:
+              m = re.search(r"^(\s*)PRIV_REQUIRES\s*$", src, re.M)
+              if not m:
+                  raise SystemExit("PRIV_REQUIRES block not found")
+              indent = m.group(1) + "    "
+              new = src[:m.end()] + "\n" + indent + "esp_http_client" + src[m.end():]
+              open(p, "w", encoding="utf-8").write(new)
+              print("injected esp_http_client into PRIV_REQUIRES")
+          PY
+          grep -n -A 2 "PRIV_REQUIRES" main/CMakeLists.txt | head -5
 
       - name: Build firmware
         shell: bash
