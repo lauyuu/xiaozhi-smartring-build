@@ -1,4 +1,4 @@
-name: Build XiaoZhi 2.2.3 for VIEWE SmartRing Plus (1.85 IPS / 16MB)
+name: Build XiaoZhi 2.2.3 for VIEWE SmartRing Plus (custom OTA server)
 
 on:
   push:
@@ -7,6 +7,10 @@ on:
 
 permissions:
   contents: read
+
+env:
+  OTA_URL_TARGET: "http://8.140.207.63:8003/xiaozhi/ota/"
+  TARGET_DIR: src/examples/esp-idf/11_xiaozhi/xiaozhi-esp32-main_smartring_plus_B_V2
 
 jobs:
   build:
@@ -31,63 +35,44 @@ jobs:
           cd src
           git sparse-checkout set \
             examples/esp-idf/11_xiaozhi/xiaozhi-esp32-main_smartring_plus_B_V2
-          test -f examples/esp-idf/11_xiaozhi/xiaozhi-esp32-main_smartring_plus_B_V2/scripts/release.py
+          test -f "$TARGET_DIR/scripts/release.py"
 
-      - name: Apply local overlay (clock + weather widget)
+      - name: Point firmware at the custom OTA server
         shell: bash
         run: |
           set -e
-          TARGET=src/examples/esp-idf/11_xiaozhi/xiaozhi-esp32-main_smartring_plus_B_V2
-          # Container jobs do not auto-checkout the repository, so fetch the
-          # overlay from the (public) build repo explicitly. No token needed.
-          git clone --depth 1 https://github.com/${{ github.repository }}.git build-meta
-          test -d build-meta/overlay
-          find build-meta/overlay -type f | sort
-          cp -av build-meta/overlay/main/display/. "$TARGET/main/display/"
-          grep -c "StartClockAndWeather" "$TARGET/main/display/lcd_display.cc"
-          # main/CMakeLists.txt does not list esp_http_client (nothing upstream used
-          # it), so register the dependency for the weather fetcher. Idempotent.
-          cd "$TARGET"
+          cd "$TARGET_DIR"
           python3 - <<'PY'
-          import re
-          p = "main/CMakeLists.txt"
-          src = open(p, encoding="utf-8").read()
-          if "esp_http_client" in src:
-              print("esp_http_client already present")
-          else:
-              m = re.search(r"^(\s*)PRIV_REQUIRES\s*$", src, re.M)
-              if not m:
-                  raise SystemExit("PRIV_REQUIRES block not found")
-              indent = m.group(1) + "    "
-              new = src[:m.end()] + "\n" + indent + "esp_http_client" + src[m.end():]
-              open(p, "w", encoding="utf-8").write(new)
-              print("injected esp_http_client into PRIV_REQUIRES")
+          import json
+          import os
+          import sys
+
+          url = os.environ.get("OTA_URL_TARGET", "")
+          # Fail loudly on the classic mistakes before spending build minutes.
+          if not url.startswith("http://"):
+              sys.exit("OTA URL must be plain http (server has no certificate): %r" % url)
+          if "8002" in url:
+              sys.exit("Port 8002 is the full-module build; this server uses 8003")
+          if not url.endswith("/xiaozhi/ota/"):
+              sys.exit("OTA URL must end with /xiaozhi/ota/ or the server returns 404: %r" % url)
+
+          path = "main/boards/viewe-smartring-plus/config.json"
+          with open(path, encoding="utf-8") as f:
+              data = json.load(f)
+
+          for build in data["builds"]:
+              append = build.setdefault("sdkconfig_append", [])
+              append[:] = [x for x in append if not x.startswith("CONFIG_OTA_URL=")]
+              append.append('CONFIG_OTA_URL="%s"' % url)
+
+          with open(path, "w", encoding="utf-8") as f:
+              f.write(json.dumps(data, ensure_ascii=False))
+          print("injected:", url)
+          print(open(path, encoding="utf-8").read())
           PY
-          grep -n -A 2 "PRIV_REQUIRES" main/CMakeLists.txt | head -5
-          # The app is 0x3f0d20 bytes and the stock ota_0 slot is 0x3f0000 — it no
-          # longer fits. assets only needs ~2.7 MB of its 8 MB, so shrink it to 7 MB
-          # and give both OTA slots 0x470000 each. Nothing hard-codes the address;
-          # assets are located by partition label at runtime. Idempotent.
-          python3 - <<'PY'
-          p = "partitions/v2/16m.csv"
-          src = open(p, encoding="utf-8").read()
-          if "0x470000" in src:
-              print("partition table already patched")
-          else:
-              out = []
-              for line in src.splitlines():
-                  if line.startswith("ota_0,"):
-                      out.append("ota_0,    app,  ota_0,   0x20000,   0x470000,")
-                  elif line.startswith("ota_1,"):
-                      out.append("ota_1,    app,  ota_1,   ,          0x470000,")
-                  elif line.startswith("assets,"):
-                      out.append("assets,   data, spiffs,  0x900000,  7M")
-                  else:
-                      out.append(line)
-              open(p, "w", encoding="utf-8").write("\n".join(out) + "\n")
-              print("patched partition table: ota 0x470000 x2, assets 7M @ 0x900000")
-          PY
-          cat partitions/v2/16m.csv
+          grep -q 'CONFIG_OTA_URL="http://8.140.207.63:8003/xiaozhi/ota/"' \
+            main/boards/viewe-smartring-plus/config.json
+          echo "config.json verified"
 
       - name: Build firmware
         shell: bash
@@ -97,29 +82,37 @@ jobs:
           python scripts/release.py viewe-smartring-plus
           test -s build/merged-binary.bin
 
-      - name: Verify widget code reached the binary
+      - name: Verify the OTA URL reached the binary
         shell: bash
         run: |
-          cd src/examples/esp-idf/11_xiaozhi/xiaozhi-esp32-main_smartring_plus_B_V2
-          echo "SOURCE_MD5=$(md5sum main/display/lcd_display.cc | cut -d' ' -f1)"
-          echo "SOURCE_WX=$(grep -c wx_widget main/display/lcd_display.cc || true)"
-          OBJ=$(find build -name 'lcd_display.cc.obj' | head -1)
-          echo "OBJ_PATH=$OBJ"
-          if [ -n "$OBJ" ]; then
-            echo "OBJ_MD5=$(md5sum "$OBJ" | cut -d' ' -f1)"
-            echo "OBJ_WX=$(strings "$OBJ" | grep -c wx_widget || true)"
-            echo "OBJ_WEATHER=$(strings "$OBJ" | grep -c 'ip-api' || true)"
-          fi
-          echo "BIN_WX=$(grep -ac wx_widget build/merged-binary.bin || true)"
-          echo "BIN_WEATHER=$(grep -ac 'ip-api' build/merged-binary.bin || true)"
+          cd "$TARGET_DIR"
           echo "BIN_SIZE=$(stat -c%s build/merged-binary.bin)"
-          echo "APP_BIN_WX=$(grep -ac wx_widget build/xiaozhi.bin 2>/dev/null || echo 'no app bin')"
-          ls -la releases 2>/dev/null || echo "no releases dir"
+          echo "OTA_URL_HITS=$(grep -ac '8.140.207.63:8003' build/merged-binary.bin || true)"
+          echo "ASSETS_AT_800000=$(grep -ac 'CONFIG_OTA_URL' main/boards/viewe-smartring-plus/config.json || true)"
+          python3 - <<'PY'
+          import struct
+          d = open("build/merged-binary.bin", "rb").read()
+          print("magic=0x%02X size=%d" % (d[0], len(d)))
+          for i in range(0, 0x1000, 0x20):
+              e = d[0x8000 + i: 0x8000 + i + 32]
+              if len(e) < 32 or e[:2] != b"\xaa\x50":
+                  break
+              _, _, _, off, size = struct.unpack("<HBBII", e[:12])
+              label = e[12:28].split(b"\x00")[0].decode("ascii", "replace")
+              print("  %-10s off=0x%07X size=0x%07X end=0x%07X" % (label, off, size, off + size))
+          ad = d[0x20020:]
+          print("app project=%s version=%s date=%s" % (
+              ad[48:80].split(b"\x00")[0].decode("ascii", "replace"),
+              ad[16:48].split(b"\x00")[0].decode("ascii", "replace"),
+              ad[96:128].split(b"\x00")[0].decode("ascii", "replace")))
+          PY
+          test "$(grep -ac '8.140.207.63:8003' build/merged-binary.bin || true)" != "0" \
+            || { echo "ERROR: OTA URL not found in merged binary"; exit 1; }
 
       - name: Upload merged binary
         uses: actions/upload-artifact@v4
         with:
-          name: xiaozhi-viewe-smartring-plus-clock-weather
+          name: xiaozhi-viewe-ota-custom
           path: |
             src/examples/esp-idf/11_xiaozhi/xiaozhi-esp32-main_smartring_plus_B_V2/build/merged-binary.bin
             src/examples/esp-idf/11_xiaozhi/xiaozhi-esp32-main_smartring_plus_B_V2/releases/*.zip
