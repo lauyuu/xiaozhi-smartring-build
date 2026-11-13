@@ -35,7 +35,11 @@ jobs:
           cd src
           git sparse-checkout set \
             examples/esp-idf/11_xiaozhi/xiaozhi-esp32-main_smartring_plus_B_V2
-          test -f "$TARGET_DIR/scripts/release.py"
+          # NOTE: we are already inside src/, so the path must NOT repeat the
+          # src/ prefix that TARGET_DIR carries.
+          test -f examples/esp-idf/11_xiaozhi/xiaozhi-esp32-main_smartring_plus_B_V2/scripts/release.py \
+            || { echo "ERROR: release.py missing after sparse checkout"; ls -la examples 2>/dev/null; exit 1; }
+          echo "sparse checkout OK"
 
       - name: Point firmware at the custom OTA server
         shell: bash
