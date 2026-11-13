@@ -74,9 +74,24 @@ jobs:
           print("injected:", url)
           print(open(path, encoding="utf-8").read())
           PY
-          grep -q 'CONFIG_OTA_URL="http://8.140.207.63:8003/xiaozhi/ota/"' \
-            main/boards/viewe-smartring-plus/config.json
-          echo "config.json verified"
+          python3 - <<'PY'
+          import json
+          import sys
+
+          expect = 'CONFIG_OTA_URL="http://8.140.207.63:8003/xiaozhi/ota/"'
+          path = "main/boards/viewe-smartring-plus/config.json"
+          with open(path, encoding="utf-8") as f:
+              data = json.load(f)
+          # Compare the *parsed* value, not the raw file text: json.dumps
+          # escapes the inner quotes, so grepping the file for a bare
+          # CONFIG_OTA_URL="..." can never match.
+          found = [item for build in data["builds"]
+                   for item in build.get("sdkconfig_append", [])
+                   if item.startswith("CONFIG_OTA_URL=")]
+          if found != [expect]:
+              sys.exit("OTA URL mismatch, got %r expected %r" % (found, expect))
+          print("config.json verified:", found[0])
+          PY
 
       - name: Build firmware
         shell: bash
@@ -92,7 +107,7 @@ jobs:
           cd "$TARGET_DIR"
           echo "BIN_SIZE=$(stat -c%s build/merged-binary.bin)"
           echo "OTA_URL_HITS=$(grep -ac '8.140.207.63:8003' build/merged-binary.bin || true)"
-          echo "ASSETS_AT_800000=$(grep -ac 'CONFIG_OTA_URL' main/boards/viewe-smartring-plus/config.json || true)"
+          echo "OTA_CFG_ENTRIES=$(grep -ac 'CONFIG_OTA_URL' main/boards/viewe-smartring-plus/config.json || true)"
           python3 - <<'PY'
           import struct
           d = open("build/merged-binary.bin", "rb").read()
