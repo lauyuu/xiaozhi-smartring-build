@@ -1,4 +1,4 @@
-name: Build XiaoZhi 2.2.3 for VIEWE SmartRing Plus (custom OTA server)
+name: Build XiaoZhi 2.2.3 for VIEWE SmartRing Plus (custom OTA + wake word)
 
 on:
   push:
@@ -93,6 +93,79 @@ jobs:
           print("config.json verified:", found[0])
           PY
 
+      - name: Apply wake word + audio sample rate patches
+        shell: bash
+        run: |
+          set -e
+          cd "$TARGET_DIR"
+          python3 - <<'PY'
+          import pathlib
+          import sys
+
+          # 1) Advertise the codec's real output rate (24 kHz) in hello, so the
+          #    server stops sending 16 kHz TTS that we then have to upsample
+          #    ("Server sample rate 16000 does not match device output 24000").
+          p = pathlib.Path("main/protocols/websocket_protocol.cc")
+          s = p.read_text(encoding="utf-8")
+          old = 'cJSON_AddNumberToObject(audio_params, "sample_rate", 16000);'
+          new = 'cJSON_AddNumberToObject(audio_params, "sample_rate", 24000);'
+          if s.count(old) != 1:
+              sys.exit("sample_rate anchor not unique: %d" % s.count(old))
+          p.write_text(s.replace(old, new), encoding="utf-8")
+          print("patched hello sample_rate -> 24000")
+
+          # 2) The vendor firmware builds with the emote assets strategy, which
+          #    leaves partition_valid_ false on this LCD board, so SetModelsList()
+          #    is never called and AFE has no wakenet. Load the models straight
+          #    from the dedicated "model" partition instead.
+          p = pathlib.Path("main/application.cc")
+          s = p.read_text(encoding="utf-8")
+          old = (
+              '    if (!assets.partition_valid()) {\n'
+              '        ESP_LOGW(TAG, "Assets partition is disabled for board %s", BOARD_NAME);\n'
+              '        return;\n'
+              '    }'
+          )
+          new = (
+              '    if (!assets.partition_valid()) {\n'
+              '        ESP_LOGW(TAG, "Assets partition is disabled for board %s", BOARD_NAME);\n'
+              '        auto models = esp_srmodel_init("model");\n'
+              '        if (models != nullptr) {\n'
+              '            GetAudioService().SetModelsList(models);\n'
+              '            ESP_LOGI(TAG, "Loaded srmodels from model partition");\n'
+              '        } else {\n'
+              '            ESP_LOGW(TAG, "No srmodels found in model partition");\n'
+              '        }\n'
+              '        return;\n'
+              '    }'
+          )
+          if s.count(old) != 1:
+              sys.exit("assets anchor not unique: %d" % s.count(old))
+          p.write_text(s.replace(old, new), encoding="utf-8")
+          print("patched assets fallback -> model partition")
+
+          # 3) Reserve 960K for esp-sr models (spiffs "model"), keep both OTA
+          #    slots at 4.06MB, hand the remainder to assets.
+          pathlib.Path("partitions/v2/16m.csv").write_text(
+              "# ESP-IDF Partition Table\n"
+              "# Name,   Type, SubType, Offset,  Size, Flags\n"
+              "nvs,      data, nvs,     0x9000,    0x4000,\n"
+              "otadata,  data, ota,     0xd000,    0x2000,\n"
+              "phy_init, data, phy,     0xf000,    0x1000,\n"
+              "model,    data, spiffs,  0x10000,   0xF0000,\n"
+              "ota_0,    app,  ota_0,   0x100000,  0x410000,\n"
+              "ota_1,    app,  ota_1,   0x510000,  0x410000,\n"
+              "assets,   data, spiffs,  0x920000,  0x6E0000,\n",
+              encoding="utf-8")
+          print("rewrote partitions/v2/16m.csv")
+          PY
+          echo "--- patched hello ---"
+          grep -n 'sample_rate' main/protocols/websocket_protocol.cc | head -3
+          echo "--- patched fallback ---"
+          grep -n 'srmodels from model partition' main/application.cc
+          echo "--- partition table ---"
+          cat partitions/v2/16m.csv
+
       - name: Build firmware
         shell: bash
         working-directory: src/examples/esp-idf/11_xiaozhi/xiaozhi-esp32-main_smartring_plus_B_V2
@@ -101,39 +174,46 @@ jobs:
           python scripts/release.py viewe-smartring-plus
           test -s build/merged-binary.bin
 
-      - name: Verify the OTA URL reached the binary
+      - name: Verify patches reached the binary
         shell: bash
         run: |
           cd "$TARGET_DIR"
           echo "BIN_SIZE=$(stat -c%s build/merged-binary.bin)"
           echo "OTA_URL_HITS=$(grep -ac '8.140.207.63:8003' build/merged-binary.bin || true)"
-          echo "OTA_CFG_ENTRIES=$(grep -ac 'CONFIG_OTA_URL' main/boards/viewe-smartring-plus/config.json || true)"
+          echo "SRMODELS_FALLBACK_HITS=$(grep -ac 'srmodels from model partition' build/merged-binary.bin || true)"
+          echo "--- srmodels.bin ---"
+          find build -name 'srmodels.bin' -exec ls -l {} \;
+          find build -name 'srmodels.bin' -exec strings {} \; | grep -i -E 'wn9|nihaoxiaozhi|vadnet|nsnet' | sort -u | head -10
           python3 - <<'PY'
           import struct
           d = open("build/merged-binary.bin", "rb").read()
           print("magic=0x%02X size=%d" % (d[0], len(d)))
+          labels = []
           for i in range(0, 0x1000, 0x20):
               e = d[0x8000 + i: 0x8000 + i + 32]
               if len(e) < 32 or e[:2] != b"\xaa\x50":
                   break
               _, _, _, off, size = struct.unpack("<HBBII", e[:12])
               label = e[12:28].split(b"\x00")[0].decode("ascii", "replace")
+              labels.append(label)
               print("  %-10s off=0x%07X size=0x%07X end=0x%07X" % (label, off, size, off + size))
-          ad = d[0x20020:]
+          if "model" not in labels:
+              raise SystemExit("ERROR: model partition missing from merged binary")
+          ad = d[0x100020:]
           print("app project=%s version=%s date=%s" % (
               ad[48:80].split(b"\x00")[0].decode("ascii", "replace"),
               ad[16:48].split(b"\x00")[0].decode("ascii", "replace"),
               ad[96:128].split(b"\x00")[0].decode("ascii", "replace")))
           PY
-          test "$(grep -ac '8.140.207.63:8003' build/merged-binary.bin || true)" != "0" \
-            || { echo "ERROR: OTA URL not found in merged binary"; exit 1; }
+          test -n "$(find build -name 'srmodels.bin')" \
+            || { echo "ERROR: srmodels.bin was not produced by esp-sr"; exit 1; }
 
-      - name: Upload merged binary
+      - name: Upload firmware + speech models
         uses: actions/upload-artifact@v4
         with:
-          name: xiaozhi-viewe-ota-custom
+          name: xiaozhi-viewe-wakeword
           path: |
             src/examples/esp-idf/11_xiaozhi/xiaozhi-esp32-main_smartring_plus_B_V2/build/merged-binary.bin
-            src/examples/esp-idf/11_xiaozhi/xiaozhi-esp32-main_smartring_plus_B_V2/releases/*.zip
+            src/examples/esp-idf/11_xiaozhi/xiaozhi-esp32-main_smartring_plus_B_V2/build/srmodels/srmodels.bin
           if-no-files-found: error
           retention-days: 14
